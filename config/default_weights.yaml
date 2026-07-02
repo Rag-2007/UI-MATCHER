@@ -1,0 +1,54 @@
+# UI Visual Match Validator — Default Configuration
+# All weights and thresholds live here; never hardcoded in source.
+
+# ── Score fusion weights (must sum to 1.0) ────────────────────────────────────
+weights:
+  ssim: 0.05          # Layer A — structural sanity check (low weight)
+  phash: 0.05         # Layer B — perceptual hash gate (very low weight)
+  position: 0.65      # Layer C — element position matching (PRIMARY)
+  color: 0.25         # Layer D — Lab/Delta-E color comparison (PRIMARY)
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+preprocess:
+  reference_width: 1280          # common reference resolution width
+  reference_height: 800          # common reference resolution height
+  ssim_blur_radius: 1            # Gaussian blur radius for SSIM only (px)
+  pad_color: [255, 255, 255]     # RGB color used for letterbox padding
+
+# ── Element detection (Layer C) ───────────────────────────────────────────────
+element_detection:
+  canny_threshold1: 50
+  canny_threshold2: 150
+  min_contour_area: 500          # px² — discard tiny noise regions
+  max_contour_area_ratio: 0.90   # fraction of total image area — discard full-image contours
+  min_aspect_ratio: 0.05
+  max_aspect_ratio: 20.0
+  iou_weight: 0.6                # blend weight for IoU vs centroid distance in cost matrix
+  centroid_weight: 0.4
+  match_cost_threshold: 0.85     # elements with cost > threshold are unmatched
+
+# ── Color comparison (Layer D) ────────────────────────────────────────────────
+color:
+  kmeans_k: 3                    # dominant color clusters per region
+  delta_e_threshold: 10.0        # Delta-E distance considered "fully different"
+  histogram_bins: 64             # bins per channel for global histogram comparison
+  histogram_weight: 0.3          # blend: per-element vs global histogram in color score
+
+# ── Score penalties ───────────────────────────────────────────────────────────
+penalties:
+  missing_element_penalty: 0.30  # deducted per unmatched expected element
+  extra_element_penalty: 0.15    # deducted per extra element in actual
+
+# ── Hard-fail / critical elements ────────────────────────────────────────────
+# Elements tagged here cause the score to be capped if missing.
+critical_elements: []
+#  - submit_button
+#  - navigation_bar
+
+critical_element_score_cap: 60.0  # max score if any critical element is missing
+
+# ── Ignore regions ────────────────────────────────────────────────────────────
+# Can also be passed at runtime via --ignore-regions flag.
+# Format: list of {x, y, w, h} in pixels (relative to reference resolution).
+ignore_regions: []
+#  - {x: 0, y: 0, w: 100, h: 60}   # top-left logo that changes

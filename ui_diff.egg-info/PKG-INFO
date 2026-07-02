@@ -1,0 +1,206 @@
+Metadata-Version: 2.4
+Name: ui-diff
+Version: 1.0.0
+Summary: UI Visual Match Validator — position & color focused screenshot comparison
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: opencv-python>=4.8.0
+Requires-Dist: scikit-image>=0.21.0
+Requires-Dist: imagehash>=4.3.1
+Requires-Dist: scipy>=1.11.0
+Requires-Dist: colormath>=3.0.0
+Requires-Dist: fastapi>=0.104.0
+Requires-Dist: uvicorn[standard]>=0.24.0
+Requires-Dist: typer[all]>=0.9.0
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: matplotlib>=3.7.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: python-multipart>=0.0.6
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: httpx>=0.25.0; extra == "dev"
+Provides-Extra: dom
+Requires-Dist: playwright>=1.40.0; extra == "dom"
+Provides-Extra: semantic
+Requires-Dist: open-clip-torch>=2.24.0; extra == "semantic"
+
+# UI Visual Match Validator
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+
+A **layered visual-diff pipeline** that compares an **Expected** UI design mock against an **Actual** screenshot, producing a **confidence score (0–100)** and an annotated visual diff report.
+
+## Architecture
+
+```
+Expected Image ─┐
+                 ├─► [1] Preprocess & Align ─► [2] Detect & Match Elements ─► [3] Score Fusion ─► [4] Report
+Actual Image   ──┘
+```
+
+| Layer | Method | Weight |
+|---|---|---|
+| A — SSIM | Structural similarity (sanity check) | 15% |
+| B — pHash | Perceptual hash gate | 5% |
+| **C — Position** | **OpenCV Canny + Hungarian matching** | **50%** |
+| **D — Color** | **Lab/Delta-E CIE2000 + histogram** | **30%** |
+
+> **Text/OCR is never part of the default score.** Dynamic content causes constant false mismatches. Enable via config only for static-copy validation.
+
+---
+
+## Installation
+
+```bash
+cd ui-diff
+pip install -e ".[dev]"
+```
+
+### Optional extras
+```bash
+pip install -e ".[dom]"       # Playwright DOM ground-truth bounding boxes
+pip install -e ".[semantic]"  # CLIP semantic layer (Phase 2)
+```
+
+---
+
+## Usage
+
+### CLI
+
+```bash
+ui-diff compare expected.png actual.png \
+  --config config/default_weights.yaml \
+  --ignore-regions ignore.json \
+  --output report.json \
+  --diff-image diff.png \
+  --threshold 85
+```
+
+Exit code `0` = passes threshold, `1` = below threshold, `2` = input error.
+
+### Python Library
+
+```python
+from ui_diff import compare
+
+result = compare("expected.png", "actual.png", config="config/default_weights.yaml")
+assert result.confidence_score >= 85
+assert not result.has_critical_failures
+
+print(result.confidence_score)   # e.g. 87.4
+print(result.layers)             # {"ssim": 0.91, "phash": 0.95, "position_match": 0.84, "color_match": 0.88}
+print(result.issues)             # list of detected problems
+```
+
+### FastAPI
+
+```bash
+uvicorn ui_diff.api:app --reload
+```
+
+```
+POST http://localhost:8000/compare
+  multipart form:
+    expected_image: <file>
+    actual_image:   <file>
+    config:         <optional JSON string>
+    ignore_regions: <optional JSON string>
+```
+
+---
+
+## JSON Report Schema
+
+```json
+{
+  "confidence_score": 87.4,
+  "layers": {
+    "ssim": 0.91,
+    "phash": 0.95,
+    "position_match": 0.84,
+    "color_match": 0.88
+  },
+  "issues": [
+    {
+      "type": "position_shift",
+      "severity": "drift",
+      "delta_x_norm": 0.05,
+      "delta_y_norm": 0.0,
+      "message": "Element shifted: Δx=0.050, Δy=0.000 (normalized to image dims)"
+    }
+  ],
+  "has_critical_failures": false
+}
+```
+
+---
+
+## Configuration
+
+All weights and thresholds live in `config/default_weights.yaml` — **never hardcoded**:
+
+```yaml
+weights:
+  ssim: 0.15
+  phash: 0.05
+  position: 0.50   # primary
+  color: 0.30      # primary
+
+critical_elements:
+  - submit_button  # missing these caps the score
+
+ignore_regions:
+  - {x: 0, y: 0, w: 100, h: 60}  # ignore dynamic top-left logo
+```
+
+---
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+Four fixture scenarios (all programmatically generated — no external image files):
+
+| Test | Expected | Passes if |
+|---|---|---|
+| `near_identical_pair` | Tiny noise only | confidence ≥ 85 |
+| `shifted_element_pair` | 40px X shift | position_shift flagged, score < 85 |
+| `wrong_color_pair` | Blue→Red header | color_mismatch flagged |
+| `missing_element_pair` | Button removed | missing_element flagged, score < 85 |
+
+---
+
+## Project Structure
+
+```
+ui-diff/
+├── ui_diff/
+│   ├── __init__.py          # compare() public API
+│   ├── _config.py           # YAML config loader
+│   ├── preprocess.py        # alignment, resizing, masking
+│   ├── layers/
+│   │   ├── ssim_layer.py    # Layer A
+│   │   ├── phash_layer.py   # Layer B
+│   │   ├── position_layer.py  # Layer C (PRIMARY)
+│   │   ├── color_layer.py   # Layer D (PRIMARY)
+│   │   ├── text_layer.py    # off by default
+│   │   └── semantic_layer.py  # phase 2, optional
+│   ├── dom_capture.py       # optional Playwright ground-truth bboxes
+│   ├── fusion.py            # weighted scoring + hard-fail rules
+│   ├── report.py            # JSON + annotated overlay generation
+│   ├── cli.py               # Typer CLI
+│   └── api.py               # FastAPI
+├── config/
+│   └── default_weights.yaml
+├── tests/
+│   ├── conftest.py          # programmatic fixture image factories
+│   └── test_pipeline.py     # 4 scenario tests + schema tests
+├── pyproject.toml
+├── requirements.txt
+└── README.md
+```
